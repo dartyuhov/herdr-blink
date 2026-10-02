@@ -98,7 +98,8 @@ impl App {
 
     /// Recomputes visible rows. With `keep_selection`, the selected node
     /// stays selected if it survives. Otherwise the best-scoring pane row is
-    /// selected when a query is active, and the first row when it is not.
+    /// selected when a query is active, and the first pane row when it is
+    /// not. Group lines are never selected.
     fn refilter(&mut self, keep_selection: bool) {
         let previous = keep_selection
             .then(|| self.selected_row().map(|r| r.node.clone()))
@@ -116,24 +117,34 @@ impl App {
             .unwrap_or_else(|| self.best_row());
     }
 
-    /// First row among those with the highest match score; 0 without a
-    /// query.
+    /// First pane row among those with the highest match score; the first
+    /// pane row without a query.
     fn best_row(&self) -> usize {
-        self.rows
-            .iter()
-            .enumerate()
+        let panes = || {
+            self.rows
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| r.item().is_some())
+        };
+        panes()
             .filter_map(|(idx, r)| Some((idx, r.matched.as_ref()?.score)))
             .min_by_key(|&(_, score)| Reverse(score))
+            .or_else(|| panes().next().map(|(idx, _)| (idx, 0)))
             .map_or(0, |(idx, _)| idx)
     }
 
-    fn move_selection(&mut self, delta: isize) {
-        if self.rows.is_empty() {
-            self.selected = 0;
-            return;
+    /// Moves to the next (`down`) or previous pane row, skipping group
+    /// lines. Stays put at either end.
+    fn move_selection(&mut self, down: bool) {
+        let is_pane = |&idx: &usize| self.rows[idx].item().is_some();
+        let next = if down {
+            (self.selected + 1..self.rows.len()).find(is_pane)
+        } else {
+            (0..self.selected).rev().find(is_pane)
+        };
+        if let Some(idx) = next {
+            self.selected = idx;
         }
-        let last = self.rows.len() as isize - 1;
-        self.selected = (self.selected as isize + delta).clamp(0, last) as usize;
     }
 
     fn toggle_filter(&mut self, status: Status) {
@@ -164,8 +175,8 @@ impl App {
 
     fn handle_normal(&mut self, key: KeyEvent) -> Action {
         match key.code {
-            KeyCode::Char('j') | KeyCode::Down => self.move_selection(1),
-            KeyCode::Char('k') | KeyCode::Up => self.move_selection(-1),
+            KeyCode::Char('j') | KeyCode::Down => self.move_selection(true),
+            KeyCode::Char('k') | KeyCode::Up => self.move_selection(false),
             KeyCode::Char('h' | '[') => self.set_view(self.view.prev()),
             KeyCode::Char('l' | ']') => self.set_view(self.view.next()),
             KeyCode::Char('/') => self.mode = Mode::Search,
@@ -186,10 +197,10 @@ impl App {
 
     fn handle_search(&mut self, key: KeyEvent, ctrl: bool) -> Action {
         match key.code {
-            KeyCode::Down => self.move_selection(1),
-            KeyCode::Up => self.move_selection(-1),
-            KeyCode::Char('n') if ctrl => self.move_selection(1),
-            KeyCode::Char('p') if ctrl => self.move_selection(-1),
+            KeyCode::Down => self.move_selection(true),
+            KeyCode::Up => self.move_selection(false),
+            KeyCode::Char('n') if ctrl => self.move_selection(true),
+            KeyCode::Char('p') if ctrl => self.move_selection(false),
             // Brackets switch views in search mode too, so they never reach
             // the query.
             KeyCode::Char('[') => self.set_view(self.view.prev()),
@@ -408,6 +419,32 @@ mod tests {
             "best-scoring pane, not the group line"
         );
         assert!(app.selected > 0);
+    }
+
+    #[test]
+    fn selection_skips_group_lines() {
+        let mut items = items();
+        items[0].tab_id = "w1:t2".into();
+        let mut app = App::new(items);
+        app.set_view(View::Workspaces);
+        let groups = |app: &App| app.rows.iter().filter(|r| r.item().is_none()).count();
+        assert_eq!(groups(&app), 3, "one workspace line and two tab lines");
+        assert_eq!(app.selected, 2, "first pane, under the workspace and tab");
+
+        let mut seen = vec![app.selected_item().unwrap().pane_id.clone()];
+        for _ in 0..app.rows.len() {
+            app.handle_key(key(KeyCode::Char('j')));
+            assert!(app.selected_item().is_some(), "never on a group line");
+            seen.push(app.selected_item().unwrap().pane_id.clone());
+        }
+        seen.dedup();
+        assert_eq!(seen.len(), 6, "j visits every pane once, then stops");
+
+        for _ in 0..app.rows.len() {
+            app.handle_key(key(KeyCode::Char('k')));
+            assert!(app.selected_item().is_some(), "never on a group line");
+        }
+        assert_eq!(app.selected, 2, "k stops at the first pane");
     }
 
     #[test]

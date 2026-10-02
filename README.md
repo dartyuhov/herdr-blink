@@ -39,8 +39,8 @@ Run `herdr server reload-config` to apply the change.
 
 ## Use
 
-The popup opens on the agents view, which lists agent panes across every
-workspace, except the pane you're in. When the query is empty, rows are
+By default, the popup opens on the agents view, which lists agent panes across
+every workspace, except the pane you're in. When the query is empty, rows are
 grouped by status in this order, and sorted most-recently-used within each
 group:
 
@@ -85,9 +85,8 @@ with the most urgent agent first, then the most recently used. Group lines
 show status counts, such as `●1 ⠹2`, and the latest activity under them. The
 filter chips count agents only, so they're the same in every view.
 
-`Enter` on a pane focuses it. On a workspace or tab line, it focuses that
-workspace or tab. On a repo, worktree, or folder line, it focuses the most
-recently used pane under the line.
+Only pane rows can be selected: `j` and `k` skip the workspace, tab, repo,
+worktree, and folder lines. `Enter` focuses the selected pane.
 
 ### Search
 
@@ -110,10 +109,26 @@ in the repo or branch, which ranks above a match in the full path. A match in
 a field the row does not show, such as the branch or the path, appears on a
 hint line under the selected row.
 
+## Configure
+
+blink reads `config.toml` from its herdr plugin config directory. To find the
+directory, run `herdr plugin config-dir dartyuhov.blink`. It's usually
+`~/.config/herdr/plugins/config/dartyuhov.blink/`. The file is optional, and
+every key has a default.
+
+```toml
+# The view the popup opens on: "agents" (default), "workspaces", or "projects".
+default_view = "workspaces"
+```
+
+Changes apply the next time you open the popup. If the file is invalid, the
+popup opens with the defaults, and `herdr-blink list` prints the error.
+
 ## How it works
 
-- **Open path:** one `session.snapshot` request over the herdr socket and one
-  read of a small state file. No `git` subprocesses, no network.
+- **Open path:** one `session.snapshot` request over the herdr socket and
+  reads of a small state file and the optional config file. No `git`
+  subprocesses, no network.
 - **State:** herdr's snapshot has no timestamps, so `[[events]]` hooks on
   `pane.focused` and `pane.agent_status_changed` run `herdr-blink event`.
   That command records `last_focused_ms` and `last_status_change_ms` per pane

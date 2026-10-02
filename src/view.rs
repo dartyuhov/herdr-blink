@@ -11,13 +11,17 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use serde::Deserialize;
+
 use crate::{
     model::{Item, Status, UNKNOWN, tier_mru_cmp},
     search::MatchResult,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum View {
+    #[default]
     Agents,
     Workspaces,
     Projects,

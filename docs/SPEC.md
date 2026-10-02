@@ -148,8 +148,8 @@ The snapshot has no timestamps or focus history, so blink keeps its own:
 
 ## Out of scope for v1
 
-- Configurable item scope or default view, query prefixes, folding tree
-  nodes.
+- Configurable item scope, query prefixes, folding tree nodes. (The default
+  view is configurable; see the README.)
 - Close/kill from the picker, quick-jump digits.
 - Remote machines (`--machine`).
 - Prebuilt release binaries (v1 builds with `cargo build --release`).

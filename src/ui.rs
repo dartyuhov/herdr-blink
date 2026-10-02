@@ -266,10 +266,17 @@ fn render_list(frame: &mut Frame, app: &App, ui: &mut UiState, area: Rect) {
 
     let hint = app.selected_row().and_then(|r| hint_line(app, r));
     let height = area.height as usize;
-    // Keep the selected row (and its hint line) inside the viewport.
+    // Keep the selected row (and its hint line) inside the viewport. Group
+    // lines can't be selected, so scrolling up also reveals the ones
+    // directly above the selected pane.
     let needed = if hint.is_some() { 2 } else { 1 };
-    if app.selected < ui.offset {
-        ui.offset = app.selected;
+    let headers = app.rows[..app.selected.min(app.rows.len())]
+        .iter()
+        .rposition(|r| r.item().is_some())
+        .map_or(0, |idx| idx + 1);
+    let top = headers.max((app.selected + needed).saturating_sub(height));
+    if top < ui.offset {
+        ui.offset = top;
     } else if app.selected + needed > ui.offset + height {
         ui.offset = (app.selected + needed).saturating_sub(height);
     }

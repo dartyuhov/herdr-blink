@@ -1,4 +1,5 @@
 mod app;
+mod config;
 mod git;
 mod graphics;
 mod herdr;
@@ -74,9 +75,14 @@ fn load_items() -> Result<(Vec<model::Item>, serde_json::Value), String> {
 }
 
 /// `list [--view agents|workspaces|projects] [query]`: prints the rows of a
-/// view, trees indented by depth.
+/// view, trees indented by depth. Without `--view`, the configured default.
 fn list() -> Result<(), String> {
-    let mut view = View::Agents;
+    let mut view = config::load(&config::config_dir())
+        .unwrap_or_else(|e| {
+            eprintln!("herdr-blink: {e}");
+            config::Config::default()
+        })
+        .default_view;
     let mut query = None;
     let mut args = env::args().skip(2);
     while let Some(arg) = args.next() {
@@ -131,6 +137,9 @@ fn list() -> Result<(), String> {
 fn run_ui() -> Result<(), String> {
     let (items, snapshot) = load_items()?;
     let mut app = App::new(items);
+    // A broken config shouldn't keep the picker from opening.
+    let config = config::load(&config::config_dir()).unwrap_or_default();
+    app.set_view(config.default_view);
 
     let mut stdout = io::stdout();
     // Popup-local background so the popup renders opaque, like the user's

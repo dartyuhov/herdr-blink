@@ -34,6 +34,7 @@ It must stay fast; the spec target is under 50 ms.
 
 - `herdr.rs` sends one `session.snapshot` over the raw Unix socket (newline-delimited JSON) rather than spawning the CLI.
 - `state.rs` reads `$HERDR_PLUGIN_STATE_DIR/state.json` once, without a lock.
+- `config.rs` reads the optional `$HERDR_PLUGIN_CONFIG_DIR/config.toml`, which holds `default_view`. A missing file uses the defaults. In the popup, an invalid file also falls back to the defaults, so the picker always opens. Unknown keys are ignored.
 - `model.rs` joins panes, tabs and workspaces into one `Item` per pane. Plain shells have `agent: None`, and the focused pane is kept and marked `focused`.
 - Housekeeping, such as pruning state for closed panes, runs only after the first frame.
 - Do not add `git` subprocesses or network calls: `git.rs` reads `.git/HEAD`, `gitdir:` files and `commondir` directly.
@@ -75,5 +76,5 @@ These constraints were verified against the herdr 0.9.1 source and are not obvio
 
 - While the popup is open it receives every key, including herdr's prefix, so keybindings cannot reach it.
 - The popup closes when the process exits.
-- Jumping to an agent calls `agent.focus` with the pane id. herdr marks every pane in the target tab as seen, so they are no longer `done`. Plain shells use `pane.focus`, tab and workspace lines use `tab.focus` and `workspace.focus`, and the focused pane just closes the popup.
+- Jumping to an agent calls `agent.focus` with the pane id. herdr marks every pane in the target tab as seen, so they are no longer `done`. Plain shells use `pane.focus`, and the focused pane just closes the popup. Group lines can't be selected (`App::move_selection` and `best_row` skip them), so `view::target`'s tab, workspace, and MRU-pane branches are currently unreachable from the UI.
 - Kitty keyboard disambiguation is pushed on start so that `Esc` followed by a key is not merged into `Alt+key`.

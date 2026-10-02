@@ -54,16 +54,21 @@ pub fn socket_path() -> PathBuf {
     if let Some(path) = env::var_os("HERDR_SOCKET_PATH").filter(|p| !p.is_empty()) {
         return PathBuf::from(path);
     }
-    let config = env::var_os("XDG_CONFIG_HOME")
-        .filter(|p| !p.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-        .unwrap_or_default()
-        .join("herdr");
+    let config = config_dir();
     match env::var("HERDR_SESSION") {
         Ok(name) if !name.is_empty() => config.join("sessions").join(name).join("herdr.sock"),
         _ => config.join("herdr.sock"),
     }
+}
+
+/// herdr's config root: `$XDG_CONFIG_HOME/herdr`, else `~/.config/herdr`.
+pub fn config_dir() -> PathBuf {
+    env::var_os("XDG_CONFIG_HOME")
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+        .unwrap_or_default()
+        .join("herdr")
 }
 
 /// Sends one request on a fresh connection and returns its `result` object.

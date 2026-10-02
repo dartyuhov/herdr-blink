@@ -27,7 +27,8 @@ Non-goals for this spec:
 
 - Remote machines (see [Remote machines](#remote-machines)).
 - A config file or a configurable default view. The picker always opens on
-  agents.
+  agents. (Added later: `default_view` in the plugin's `config.toml`; see the
+  README.)
 - Folding tree nodes. Trees are always fully expanded.
 
 ## View switching
@@ -53,7 +54,9 @@ design that the agents view changes.
 - The selection follows the node. If the selected node (a pane, or a group
   with the same identity) exists in the new view, it stays selected.
   Otherwise, the best-scoring pane row is selected when a query is active,
-  and the first row is selected when it isn't.
+  and the first row is selected when it isn't. (Changed later: group lines
+  can't be selected. `j` and `k` skip them, and the fallback is the first pane
+  row.)
 - The footer gains `h/l view` in normal mode.
 - The filter chip counts always count agent panes, excluding the focused pane,
   so they're identical in every view.
