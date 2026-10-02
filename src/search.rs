@@ -70,15 +70,19 @@ impl Field {
     }
 }
 
-/// The searchable text of each field of an item.
+/// The searchable text of each field of an item. Plain shells have no
+/// agent or status field.
 pub fn fields(item: &Item) -> Vec<(Field, &str)> {
-    let mut out = vec![
-        (Field::Agent, item.agent.as_str()),
-        (Field::Status, item.status.word()),
+    let mut out = Vec::with_capacity(10);
+    if let Some(agent) = &item.agent {
+        out.push((Field::Agent, agent.as_str()));
+        out.push((Field::Status, item.status.word()));
+    }
+    out.extend([
         (Field::Title, item.title.as_str()),
         (Field::Tab, item.tab.as_str()),
         (Field::Workspace, item.workspace.as_str()),
-    ];
+    ]);
     if let Some(git) = &item.git {
         out.push((Field::Project, git.project.as_str()));
         out.push((Field::Repo, git.repo.as_str()));
@@ -220,14 +224,13 @@ mod tests {
     use crate::{
         git::GitInfo,
         model::{Harness, Status},
-        state::PaneTimes,
     };
 
     fn item(title: &str, agent: &str, status: Status, cwd: &str, branch: &str) -> Item {
         Item {
             pane_id: title.into(),
             harness: Harness::detect(agent),
-            agent: agent.into(),
+            agent: Some(agent.into()),
             status,
             title: title.into(),
             workspace: "work".into(),
@@ -237,10 +240,9 @@ mod tests {
                 project: crate::model::basename(cwd).into(),
                 repo: "herdr-blink".into(),
                 branch: branch.into(),
-                worktree: None,
+                ..Default::default()
             }),
-            times: PaneTimes::default(),
-            order: 0,
+            ..Default::default()
         }
     }
 
@@ -289,5 +291,15 @@ mod tests {
         let r = search("login", &it).unwrap();
         assert_eq!(r.hidden_hit(), None);
         assert_eq!(r.indices(Field::Title), &[4, 5, 6, 7, 8]);
+    }
+
+    #[test]
+    fn plain_shells_have_no_agent_or_status() {
+        let shell = Item {
+            agent: None,
+            ..item("zsh", "", Status::Unknown, "/src/app", "")
+        };
+        assert!(search("zsh", &shell).is_some());
+        assert!(search("unknown", &shell).is_none());
     }
 }

@@ -114,6 +114,18 @@ pub fn focus_agent(pane_id: &str) -> Result<()> {
     request("agent.focus", json!({ "target": pane_id })).map(drop)
 }
 
+pub fn focus_pane(pane_id: &str) -> Result<()> {
+    request("pane.focus", json!({ "pane_id": pane_id })).map(drop)
+}
+
+pub fn focus_tab(tab_id: &str) -> Result<()> {
+    request("tab.focus", json!({ "tab_id": tab_id })).map(drop)
+}
+
+pub fn focus_workspace(workspace_id: &str) -> Result<()> {
+    request("workspace.focus", json!({ "workspace_id": workspace_id })).map(drop)
+}
+
 pub fn graphics_info(pane_id: &str) -> Result<Value> {
     request("pane.graphics.info", json!({ "pane_id": pane_id }))
 }

@@ -1,11 +1,12 @@
 //! Harness logos over the logo column.
 //!
-//! herdr caps graphics at 16 layers per pane, so all visible logos are
-//! composited into one RGBA strip covering the logo column, which is
-//! re-uploaded whenever the visible rows change (scroll / filter / query).
+//! herdr caps graphics at 16 layers per pane, so the visible logos are
+//! composited into one RGBA strip per logo column. Tree rows sit at up to
+//! three indents, so there are at most three strips. They are re-uploaded
+//! whenever the visible slots change (scroll / filter / query / view).
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     io::Write,
     path::{Path, PathBuf},
 };
@@ -53,10 +54,10 @@ impl Logos {
             .as_ref()
     }
 
-    /// Composites one strip: `LOGO_COLS` cells wide, tall enough for the
-    /// lowest slot. Each logo is centered in its row's logo box.
-    pub fn strip(&mut self, slots: &[LogoSlot]) -> Option<(Rgba, u16)> {
-        let rows = slots.iter().map(|s| s.y + 1).max()?;
+    /// Composites one strip: `LOGO_COLS` cells wide, from row `top` down to
+    /// the lowest slot. Each logo is centered in its row's logo box.
+    pub fn strip(&mut self, top: u16, slots: &[LogoSlot]) -> Option<(Rgba, u16)> {
+        let rows = slots.iter().map(|s| s.y + 1 - top).max()?;
         let box_w = self.cell_w * LOGO_COLS as u32;
         let box_h = self.cell_h;
         let mut strip = Rgba::new(box_w, box_h * rows as u32);
@@ -66,7 +67,7 @@ impl Logos {
                 continue;
             };
             let x = (box_w - logo.width.min(box_w)) / 2;
-            let y = slot.y as u32 * box_h + (box_h - logo.height.min(box_h)) / 2;
+            let y = (slot.y - top) as u32 * box_h + (box_h - logo.height.min(box_h)) / 2;
             raster::blit(&mut strip, logo, x, y);
             any = true;
         }
@@ -74,8 +75,9 @@ impl Logos {
     }
 }
 
-/// Image id for the strip inside the popup's terminal. herdr remaps ids when
-/// it forwards placements to the outer terminal, so any constant works.
+/// Base image id for the strips inside the popup's terminal; each column's
+/// strip gets `IMAGE_ID + x`. herdr remaps ids when it forwards placements
+/// to the outer terminal, so any constants work.
 const IMAGE_ID: u32 = 7_355_608;
 /// Base64 bytes per Kitty APC chunk (protocol maximum is 4096).
 const CHUNK: usize = 4096;
@@ -89,7 +91,8 @@ const CHUNK: usize = 4096;
 pub struct Graphics {
     logos: Logos,
     available: HashSet<Harness>,
-    uploaded: bool,
+    /// Image ids currently uploaded.
+    uploaded: Vec<u32>,
 }
 
 impl Graphics {
@@ -118,7 +121,7 @@ impl Graphics {
         (!available.is_empty()).then(|| Graphics {
             logos: Logos::new(dir, cell_w, cell_h),
             available,
-            uploaded: false,
+            uploaded: Vec::new(),
         })
     }
 
@@ -127,41 +130,55 @@ impl Graphics {
         &self.available
     }
 
-    /// Replaces the strip so it covers `slots`, anchored at the logo
-    /// column's top-left cell `origin` (0-based x, y).
-    pub fn draw(&mut self, out: &mut impl Write, origin: (u16, u16), slots: &[LogoSlot]) {
+    /// Replaces the strips so they cover `slots`: one strip per distinct
+    /// column, anchored at that column's topmost slot.
+    pub fn draw(&mut self, out: &mut impl Write, slots: &[LogoSlot]) {
         let mut buf = Vec::new();
-        if self.uploaded {
-            delete(&mut buf);
-            self.uploaded = false;
+        for id in self.uploaded.drain(..) {
+            delete(&mut buf, id);
         }
-        if let Some((strip, rows)) = self.logos.strip(slots) {
+        for (x, column) in columns(slots) {
+            let top = column.iter().map(|s| s.y).min().unwrap_or_default();
+            let Some((strip, rows)) = self.logos.strip(top, &column) else {
+                continue;
+            };
+            let id = IMAGE_ID + u32::from(x);
             // CUP is 1-based; C=1 keeps the cursor where it is.
-            let _ = write!(buf, "\x1b7\x1b[{};{}H", origin.1 + 1, origin.0 + 1);
-            transmit(&mut buf, &strip, LOGO_COLS, rows);
+            let _ = write!(buf, "\x1b7\x1b[{};{}H", top + 1, x + 1);
+            transmit(&mut buf, id, &strip, LOGO_COLS, rows);
             buf.extend_from_slice(b"\x1b8");
-            self.uploaded = true;
+            self.uploaded.push(id);
         }
         let _ = out.write_all(&buf);
         let _ = out.flush();
     }
 
     pub fn clear(&mut self, out: &mut impl Write) {
-        if self.uploaded {
+        if !self.uploaded.is_empty() {
             let mut buf = Vec::new();
-            delete(&mut buf);
+            for id in self.uploaded.drain(..) {
+                delete(&mut buf, id);
+            }
             let _ = out.write_all(&buf);
             let _ = out.flush();
-            self.uploaded = false;
         }
     }
 }
 
-fn delete(buf: &mut Vec<u8>) {
-    let _ = write!(buf, "\x1b_Ga=d,d=I,i={IMAGE_ID},q=2\x1b\\");
+/// Slots grouped by column `x`, left to right.
+fn columns(slots: &[LogoSlot]) -> BTreeMap<u16, Vec<LogoSlot>> {
+    let mut out: BTreeMap<u16, Vec<LogoSlot>> = BTreeMap::new();
+    for slot in slots {
+        out.entry(slot.x).or_default().push(*slot);
+    }
+    out
 }
 
-fn transmit(buf: &mut Vec<u8>, image: &Rgba, cols: u16, rows: u16) {
+fn delete(buf: &mut Vec<u8>, id: u32) {
+    let _ = write!(buf, "\x1b_Ga=d,d=I,i={id},q=2\x1b\\");
+}
+
+fn transmit(buf: &mut Vec<u8>, id: u32, image: &Rgba, cols: u16, rows: u16) {
     let data = BASE64.encode(&image.pixels);
     let mut chunks = data.as_bytes().chunks(CHUNK).peekable();
     let mut first = true;
@@ -170,7 +187,7 @@ fn transmit(buf: &mut Vec<u8>, image: &Rgba, cols: u16, rows: u16) {
         if first {
             let _ = write!(
                 buf,
-                "\x1b_Ga=T,f=32,s={},v={},i={IMAGE_ID},c={cols},r={rows},C=1,q=2,m={more};",
+                "\x1b_Ga=T,f=32,s={},v={},i={id},c={cols},r={rows},C=1,q=2,m={more};",
                 image.width, image.height
             );
             first = false;
@@ -246,13 +263,53 @@ mod tests {
         assert_eq!(fit(0, 10, 32, 32), (0, 0));
     }
 
+    fn slot(x: u16, y: u16) -> LogoSlot {
+        LogoSlot {
+            x,
+            y,
+            harness: Harness::Claude,
+        }
+    }
+
     #[test]
     fn strip_skips_missing_logos() {
         let mut logos = Logos::new(PathBuf::from("/nonexistent"), 10, 20);
-        let slots = [LogoSlot {
-            y: 0,
-            harness: Harness::Claude,
-        }];
-        assert!(logos.strip(&slots).is_none());
+        assert!(logos.strip(0, &[slot(1, 0)]).is_none());
+    }
+
+    #[test]
+    fn one_strip_per_column() {
+        let dir = std::env::temp_dir().join(format!("blink-logos-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = std::fs::File::create(dir.join("claude.png")).unwrap();
+        let mut encoder = png::Encoder::new(file, 4, 4);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().unwrap();
+        writer.write_image_data(&[255; 4 * 4 * 4]).unwrap();
+        writer.finish().unwrap();
+
+        let mut graphics = Graphics {
+            logos: Logos::new(dir.clone(), 10, 20),
+            available: HashSet::from([Harness::Claude]),
+            uploaded: Vec::new(),
+        };
+        let mut out = Vec::new();
+        graphics.draw(&mut out, &[slot(1, 3), slot(5, 4), slot(1, 6), slot(3, 5)]);
+        let out = String::from_utf8_lossy(&out);
+        assert_eq!(out.matches("a=T").count(), 3);
+        for (x, top, rows) in [(1, 3, 4), (3, 5, 1), (5, 4, 1)] {
+            let id = IMAGE_ID + x as u32;
+            assert!(out.contains(&format!("\x1b[{};{}H", top + 1, x + 1)));
+            assert!(out.contains(&format!("i={id},c={LOGO_COLS},r={rows},")));
+        }
+        assert_eq!(graphics.uploaded.len(), 3);
+
+        let mut out = Vec::new();
+        graphics.draw(&mut out, &[slot(1, 3)]);
+        let out = String::from_utf8_lossy(&out);
+        assert_eq!(out.matches("a=d").count(), 3, "old strips are deleted");
+        assert_eq!(out.matches("a=T").count(), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

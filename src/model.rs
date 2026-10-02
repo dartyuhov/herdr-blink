@@ -1,4 +1,5 @@
-//! Picker rows built from one `session.snapshot` plus blink's own state.
+//! Picker items, one per pane, built from one `session.snapshot` plus
+//! blink's own state.
 
 use std::{collections::HashMap, path::PathBuf};
 
@@ -10,12 +11,13 @@ use crate::{
     state::{PaneTimes, State},
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Status {
     Blocked,
     Done,
     Working,
     Idle,
+    #[default]
     Unknown,
 }
 
@@ -46,13 +48,14 @@ impl Status {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum Harness {
     Claude,
     Codex,
     OpenCode,
     Pi,
     Copilot,
+    #[default]
     Other,
 }
 
@@ -84,24 +87,56 @@ impl Harness {
     }
 }
 
-#[derive(Debug, Clone)]
+/// One pane: an agent, or a plain shell when `agent` is `None`.
+#[derive(Debug, Clone, Default)]
 pub struct Item {
     pub pane_id: String,
+    pub tab_id: String,
+    pub workspace_id: String,
     pub harness: Harness,
     /// Raw agent id from herdr (`claude`, `codex`, …), used for search.
-    pub agent: String,
+    pub agent: Option<String>,
     pub status: Status,
     pub title: String,
+    /// Workspace label; empty when the workspace is missing from the
+    /// snapshot.
     pub workspace: String,
+    /// Tab label (`tab N` when unset); empty when the tab is missing.
     pub tab: String,
+    pub workspace_number: Option<u64>,
+    /// 1-based position of the tab in its workspace. herdr's own tab
+    /// `number` is a creation counter, not a position.
+    pub tab_number: Option<u64>,
     pub cwd: String,
     pub git: Option<GitInfo>,
     pub times: PaneTimes,
+    /// The pane the popup was opened from.
+    pub focused: bool,
+    /// Reserved for remote machines; always `None` for now.
+    #[allow(dead_code)]
+    pub machine: Option<String>,
     /// Position in the snapshot, the final stable tie-breaker.
     pub order: usize,
 }
 
 impl Item {
+    pub fn is_agent(&self) -> bool {
+        self.agent.is_some()
+    }
+
+    /// Tab line label: the number, then the label when one is set
+    /// (`2 api`). A label that already starts with the number (`2. api`)
+    /// is shown as is.
+    pub fn tab_line(&self) -> String {
+        match self.tab_number {
+            Some(n) if self.tab == format!("tab {n}") => n.to_string(),
+            Some(n) if starts_with_number(&self.tab, n) => self.tab.clone(),
+            Some(n) => format!("{n} {}", self.tab),
+            None if self.tab.is_empty() => UNKNOWN.into(),
+            None => self.tab.clone(),
+        }
+    }
+
     /// Short folder hint shown in the row: project if in a repo, else the
     /// cwd basename.
     pub fn folder_hint(&self) -> &str {
@@ -111,6 +146,15 @@ impl Item {
         }
     }
 }
+
+fn starts_with_number(label: &str, n: u64) -> bool {
+    label
+        .strip_prefix(&n.to_string())
+        .is_some_and(|rest| !rest.starts_with(|c: char| c.is_ascii_digit()))
+}
+
+/// Label of a group whose identity is missing from the snapshot.
+pub const UNKNOWN: &str = "(unknown)";
 
 pub fn basename(path: &str) -> &str {
     path.trim_end_matches('/')
@@ -125,8 +169,6 @@ struct Snapshot {
     #[serde(default)]
     focused_pane_id: Option<String>,
     #[serde(default)]
-    agents: Vec<AgentRec>,
-    #[serde(default)]
     panes: Vec<PaneRec>,
     #[serde(default)]
     tabs: Vec<TabRec>,
@@ -135,7 +177,7 @@ struct Snapshot {
 }
 
 #[derive(Debug, Default, Deserialize)]
-struct AgentRec {
+struct PaneRec {
     pane_id: String,
     #[serde(default)]
     agent: Option<String>,
@@ -146,7 +188,7 @@ struct AgentRec {
     #[serde(default)]
     focused: bool,
     #[serde(default)]
-    name: Option<String>,
+    label: Option<String>,
     #[serde(default)]
     terminal_title_stripped: Option<String>,
     #[serde(default)]
@@ -160,19 +202,12 @@ struct AgentRec {
 }
 
 #[derive(Debug, Default, Deserialize)]
-struct PaneRec {
-    pane_id: String,
-    #[serde(default)]
-    label: Option<String>,
-}
-
-#[derive(Debug, Default, Deserialize)]
 struct TabRec {
     tab_id: String,
     #[serde(default)]
-    label: Option<String>,
+    workspace_id: String,
     #[serde(default)]
-    number: Option<u64>,
+    label: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -188,72 +223,77 @@ fn non_empty(s: &Option<String>) -> Option<&str> {
     s.as_deref().map(str::trim).filter(|s| !s.is_empty())
 }
 
-/// Agent panes across all workspaces, minus the focused pane.
+/// Every pane across all workspaces, plain shells and the focused pane
+/// included; each view decides what to show.
 pub fn build_items(snapshot: &Value, state: &State, git: &mut GitCache) -> Vec<Item> {
     let snap = Snapshot::deserialize(snapshot).unwrap_or_default();
-    let pane_labels: HashMap<&str, &str> = snap
-        .panes
-        .iter()
-        .filter_map(|p| Some((p.pane_id.as_str(), non_empty(&p.label)?)))
-        .collect();
-    let tab_labels: HashMap<&str, String> = snap
+    let mut positions: HashMap<&str, u64> = HashMap::new();
+    let tabs: HashMap<&str, (String, Option<u64>)> = snap
         .tabs
         .iter()
         .map(|t| {
+            let position = positions.entry(t.workspace_id.as_str()).or_default();
+            *position += 1;
             let label = non_empty(&t.label)
                 .map(str::to_string)
-                .unwrap_or_else(|| format!("tab {}", t.number.unwrap_or(0)));
-            (t.tab_id.as_str(), label)
+                .unwrap_or_else(|| format!("tab {position}"));
+            (t.tab_id.as_str(), (label, Some(*position)))
         })
         .collect();
-    let ws_labels: HashMap<&str, String> = snap
+    let workspaces: HashMap<&str, (String, Option<u64>)> = snap
         .workspaces
         .iter()
         .map(|w| {
             let label = non_empty(&w.label)
                 .map(str::to_string)
                 .unwrap_or_else(|| format!("workspace {}", w.number.unwrap_or(0)));
-            (w.workspace_id.as_str(), label)
+            (w.workspace_id.as_str(), (label, w.number))
         })
         .collect();
     let focused = snap.focused_pane_id.as_deref();
 
-    snap.agents
+    snap.panes
         .iter()
         .enumerate()
-        .filter(|(_, a)| !a.focused && Some(a.pane_id.as_str()) != focused)
-        .map(|(order, a)| {
-            let agent = non_empty(&a.agent)
-                .or(non_empty(&a.display_agent))
-                .unwrap_or("agent")
-                .to_string();
-            let cwd = non_empty(&a.foreground_cwd)
-                .or(non_empty(&a.cwd))
+        .map(|(order, p)| {
+            let agent = non_empty(&p.agent)
+                .or(non_empty(&p.display_agent))
+                .map(str::to_string);
+            let cwd = non_empty(&p.foreground_cwd)
+                .or(non_empty(&p.cwd))
                 .unwrap_or_default()
                 .to_string();
-            let title = non_empty(&a.terminal_title_stripped)
-                .or_else(|| pane_labels.get(a.pane_id.as_str()).copied())
-                .or(non_empty(&a.name))
-                .unwrap_or(&agent)
+            let title = non_empty(&p.terminal_title_stripped)
+                .or(non_empty(&p.label))
+                .or(agent.as_deref())
+                .unwrap_or("shell")
                 .to_string();
+            let (tab, tab_number) = tabs.get(p.tab_id.as_str()).cloned().unwrap_or_default();
+            let (workspace, workspace_number) = workspaces
+                .get(p.workspace_id.as_str())
+                .cloned()
+                .unwrap_or_default();
             Item {
-                pane_id: a.pane_id.clone(),
-                harness: Harness::detect(&agent),
-                status: Status::parse(a.agent_status.as_deref().unwrap_or("unknown")),
+                pane_id: p.pane_id.clone(),
+                tab_id: p.tab_id.clone(),
+                workspace_id: p.workspace_id.clone(),
+                harness: agent.as_deref().map_or(Harness::Other, Harness::detect),
+                status: match &agent {
+                    Some(_) => Status::parse(p.agent_status.as_deref().unwrap_or("unknown")),
+                    None => Status::Unknown,
+                },
                 title,
-                workspace: ws_labels
-                    .get(a.workspace_id.as_str())
-                    .cloned()
-                    .unwrap_or_default(),
-                tab: tab_labels
-                    .get(a.tab_id.as_str())
-                    .cloned()
-                    .unwrap_or_default(),
+                workspace,
+                tab,
+                workspace_number,
+                tab_number,
                 git: (!cwd.is_empty())
                     .then(|| git.lookup(&PathBuf::from(&cwd)))
                     .flatten(),
                 cwd,
-                times: state.get(&a.pane_id).cloned().unwrap_or_default(),
+                times: state.get(&p.pane_id).cloned().unwrap_or_default(),
+                focused: p.focused || Some(p.pane_id.as_str()) == focused,
+                machine: None,
                 agent,
                 order,
             }
@@ -261,12 +301,12 @@ pub fn build_items(snapshot: &Value, state: &State, git: &mut GitCache) -> Vec<I
         .collect()
 }
 
-/// Empty-query ordering: status tier, then MRU (last focus, then last status
-/// change), then snapshot order.
+/// Empty-query ordering: agents before plain shells, then status tier, then
+/// MRU (last focus, then last status change), then snapshot order.
 pub fn tier_mru_cmp(a: &Item, b: &Item) -> std::cmp::Ordering {
-    a.status
-        .tier()
-        .cmp(&b.status.tier())
+    (!a.is_agent())
+        .cmp(&!b.is_agent())
+        .then(a.status.tier().cmp(&b.status.tier()))
         .then(b.times.last_focused_ms.cmp(&a.times.last_focused_ms))
         .then(
             b.times
@@ -284,36 +324,70 @@ mod tests {
     fn snapshot() -> Value {
         json!({
             "focused_pane_id": "w1:p1",
-            "agents": [
+            "panes": [
                 {"pane_id": "w1:p1", "agent": "claude", "agent_status": "idle", "focused": true,
                  "tab_id": "w1:t1", "workspace_id": "w1"},
                 {"pane_id": "w1:p2", "agent": "codex", "agent_status": "working",
                  "terminal_title_stripped": "Fix bug", "cwd": "/nope/x", "tab_id": "w1:t1", "workspace_id": "w1"},
-                {"pane_id": "w2:p1", "agent": "opencode", "agent_status": "blocked",
+                {"pane_id": "w2:p1", "agent": "opencode", "agent_status": "blocked", "label": "OpenCode",
                  "terminal_title_stripped": "", "tab_id": "w2:t1", "workspace_id": "w2"},
                 {"pane_id": "w2:p2", "agent": "pi", "agent_status": "idle",
-                 "terminal_title_stripped": "pi", "tab_id": "w2:t1", "workspace_id": "w2"}
+                 "terminal_title_stripped": "pi", "tab_id": "w2:t1", "workspace_id": "w2"},
+                {"pane_id": "w2:p3", "agent": null, "agent_status": "unknown",
+                 "terminal_title_stripped": "zsh", "tab_id": "w2:t9", "workspace_id": "w9"}
             ],
-            "panes": [{"pane_id": "w2:p1", "label": "OpenCode"}],
-            "tabs": [{"tab_id": "w1:t1", "label": "main", "number": 1},
-                     {"tab_id": "w2:t1", "label": null, "number": 3}],
-            "workspaces": [{"workspace_id": "w1", "label": "blink"},
-                           {"workspace_id": "w2", "label": "other"}]
+            "tabs": [{"tab_id": "w1:t1", "workspace_id": "w1", "label": "main", "number": 1},
+                     {"tab_id": "w2:t0", "workspace_id": "w2", "label": "2. logs", "number": 5},
+                     {"tab_id": "w2:t1", "workspace_id": "w2", "label": null, "number": 9}],
+            "workspaces": [{"workspace_id": "w1", "label": "blink", "number": 1},
+                           {"workspace_id": "w2", "label": "other", "number": 2}]
         })
     }
 
+    fn ids(items: &[Item]) -> Vec<&str> {
+        items.iter().map(|i| i.pane_id.as_str()).collect()
+    }
+
     #[test]
-    fn builds_items_without_focused_pane() {
+    fn builds_one_item_per_pane() {
         let items = build_items(&snapshot(), &State::new(), &mut GitCache::default());
-        let ids: Vec<_> = items.iter().map(|i| i.pane_id.as_str()).collect();
-        assert_eq!(ids, ["w1:p2", "w2:p1", "w2:p2"]);
-        assert_eq!(items[0].harness, Harness::Codex);
-        assert_eq!(items[0].title, "Fix bug");
-        assert_eq!(items[0].workspace, "blink");
-        assert_eq!(items[0].tab, "main");
-        assert_eq!(items[0].folder_hint(), "x");
-        assert_eq!(items[1].title, "OpenCode", "falls back to pane label");
-        assert_eq!(items[1].tab, "tab 3");
+        assert_eq!(ids(&items), ["w1:p1", "w1:p2", "w2:p1", "w2:p2", "w2:p3"]);
+        assert!(items[0].focused, "focused pane is kept and marked");
+        assert!(!items[1].focused);
+        assert_eq!(items[1].harness, Harness::Codex);
+        assert_eq!(items[1].agent.as_deref(), Some("codex"));
+        assert_eq!(items[1].title, "Fix bug");
+        assert_eq!(items[1].workspace, "blink");
+        assert_eq!(items[1].workspace_number, Some(1));
+        assert_eq!(items[1].tab, "main");
+        assert_eq!(items[1].tab_line(), "1 main");
+        assert_eq!(items[1].folder_hint(), "x");
+        assert_eq!(items[2].title, "OpenCode", "falls back to pane label");
+        assert_eq!(items[2].tab, "tab 2", "position, not herdr's number");
+        assert_eq!(items[2].tab_line(), "2");
+        let logs = Item {
+            tab: "1. logs".into(),
+            tab_number: Some(1),
+            ..Default::default()
+        };
+        assert_eq!(logs.tab_line(), "1. logs", "label already numbered");
+        let big = Item {
+            tab: "12 logs".into(),
+            tab_number: Some(1),
+            ..Default::default()
+        };
+        assert_eq!(big.tab_line(), "1 12 logs");
+    }
+
+    #[test]
+    fn plain_shells_have_no_agent() {
+        let items = build_items(&snapshot(), &State::new(), &mut GitCache::default());
+        let shell = &items[4];
+        assert_eq!(shell.agent, None);
+        assert_eq!(shell.status, Status::Unknown);
+        assert_eq!(shell.title, "zsh");
+        assert_eq!(shell.workspace, "", "workspace missing from the snapshot");
+        assert_eq!(shell.tab_line(), UNKNOWN);
     }
 
     #[test]
@@ -330,10 +404,13 @@ mod tests {
         items.push(Item {
             pane_id: "w3:p1".into(),
             order: 9,
-            ..items[2].clone()
+            ..items[3].clone()
         });
         items.sort_by(tier_mru_cmp);
-        let ids: Vec<_> = items.iter().map(|i| i.pane_id.as_str()).collect();
-        assert_eq!(ids, ["w2:p1", "w1:p2", "w2:p2", "w3:p1"]);
+        assert_eq!(
+            ids(&items),
+            ["w2:p1", "w1:p2", "w2:p2", "w3:p1", "w1:p1", "w2:p3"],
+            "plain shells sort after every agent tier"
+        );
     }
 }

@@ -17,6 +17,10 @@ pub struct GitInfo {
     pub branch: String,
     /// Linked worktree name, when the cwd is inside one.
     pub worktree: Option<String>,
+    /// The repository's common git dir, canonicalized: the repo identity.
+    pub common_dir: PathBuf,
+    /// The checkout's top-level directory: the worktree identity.
+    pub worktree_root: PathBuf,
 }
 
 #[derive(Default)]
@@ -73,16 +77,18 @@ fn linked_info(root: &Path, dot_git_file: &Path) -> Option<GitInfo> {
 
 fn info_for(root: &Path, gitdir: &Path, common: &Path, worktree: Option<String>) -> GitInfo {
     let project = basename(root);
+    // Linked worktrees reach the common dir through `../..`; canonicalize so
+    // every checkout of one repo yields the same identity.
+    let common_dir = fs::canonicalize(common).unwrap_or_else(|_| common.to_path_buf());
     let repo = fs::read_to_string(common.join("config"))
         .ok()
         .and_then(|c| origin_repo_name(&c))
         .or_else(|| {
             // `<main checkout>/.git` → main checkout dir name.
-            let common = fs::canonicalize(common).unwrap_or_else(|_| common.to_path_buf());
-            if common.file_name()? != ".git" {
+            if common_dir.file_name()? != ".git" {
                 return None;
             }
-            Some(basename(common.parent()?))
+            Some(basename(common_dir.parent()?))
         })
         .unwrap_or_else(|| project.clone());
     let branch = fs::read_to_string(gitdir.join("HEAD"))
@@ -94,6 +100,8 @@ fn info_for(root: &Path, gitdir: &Path, common: &Path, worktree: Option<String>)
         repo,
         branch,
         worktree,
+        common_dir,
+        worktree_root: root.to_path_buf(),
     }
 }
 
@@ -185,13 +193,16 @@ mod tests {
         .unwrap();
 
         let info = discover(&main.join("src/deep")).unwrap();
+        let common_dir = fs::canonicalize(main.join(".git")).unwrap();
         assert_eq!(
             info,
             GitInfo {
                 project: "myrepo".into(),
                 repo: "myrepo".into(),
                 branch: "main".into(),
-                worktree: None
+                worktree: None,
+                common_dir: common_dir.clone(),
+                worktree_root: main.clone(),
             }
         );
 
@@ -200,6 +211,8 @@ mod tests {
         assert_eq!(info.repo, "myrepo");
         assert_eq!(info.branch, "topic");
         assert_eq!(info.worktree.as_deref(), Some("wt1"));
+        assert_eq!(info.common_dir, common_dir, "same repo identity");
+        assert_eq!(info.worktree_root, wt);
 
         fs::remove_dir_all(&tmp).unwrap();
     }

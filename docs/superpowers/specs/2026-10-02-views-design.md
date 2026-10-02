@@ -38,6 +38,8 @@ design that the agents view changes.
 - In normal mode, `l` moves to the next view and `h` to the previous one, in
   the order agents, workspaces, projects. Both keys wrap around. In search
   mode, `h` and `l` are typed into the query as usual.
+- `[` and `]` also move to the previous and next view. They work in both
+  modes; in search mode they switch views instead of being typed.
 - The picker opens on agents.
 - The rule line under the header becomes the view tab bar, so the list loses
   no rows. The active view is highlighted:

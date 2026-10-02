@@ -26,12 +26,21 @@ picker on `prefix+f`.
 - Re-invoking `open` while the popup is open focuses the existing popup
   (no duplicates).
 
-## Items (v1)
+## Items and views
 
-- Agent panes across **all workspaces** in the session.
-- The currently focused pane is **hidden**.
-- Configurable scope (plain panes / tabs / workspaces) and extra **views** are
-  deferred; `h` / `l` are reserved for cycling views.
+Items are panes across **all workspaces** in the session. `h` / `l` cycle
+three views over them; the picker always opens on agents. The full design is
+in [Views: agents, workspaces, projects](superpowers/specs/2026-10-02-views-design.md).
+
+- **Agents**: agent panes only, with the currently focused pane **hidden**.
+- **Workspaces**: a tree of workspaces, tabs, and every pane, plain shells
+  and the focused pane included.
+- **Projects**: a tree of git repos, worktrees, and panes; panes outside a
+  repo are grouped by folder.
+
+Trees use the same attention-first, MRU ordering at every level. The query
+and the status filter are shared across views and prune the trees without
+reordering them.
 
 ## Ordering (empty query)
 
@@ -91,18 +100,22 @@ Opens in **normal mode**.
 | Mode | Key | Action |
 |---|---|---|
 | normal | `j` / `k`, `↓` / `↑` | move selection |
-| normal | `h` / `l` | cycle views (reserved; no-op in v1) |
+| normal | `h` / `l`, `[` / `]` | previous / next view (agents, workspaces, projects) |
 | normal | `/` | enter search mode |
 | normal | `b` / `d` / `w` / `i` | exclusive filter: blocked / done / working / idle |
 | normal | same filter key again, or `a` | clear filter (All) |
-| normal | `Enter` | jump to selected agent |
+| normal | `Enter` | jump to selected row |
 | normal | `Esc` / `q` | close popup |
 | search | typing | update query live |
 | search | `↓` / `↑`, `ctrl+n` / `ctrl+p` | move selection |
-| search | `Enter` | jump to selected agent |
+| search | `[` / `]` | previous / next view (not typed into the query) |
+| search | `Enter` | jump to selected row |
 | search | `Esc` | back to normal mode, query kept |
 
-Jumping uses `agent.focus` (marks the agent seen).
+Jumping to an agent uses `agent.focus` (marks the agent seen). Plain shells
+use `pane.focus`, tab lines `tab.focus`, and workspace lines
+`workspace.focus`. Repo, worktree, and folder lines focus their most recently
+used pane.
 
 ## State tracking
 
@@ -120,9 +133,10 @@ The snapshot has no timestamps or focus history, so blink keeps its own:
 
 - `pane.graphics.info` reports `file_frame_transport: "direct-kitty"`, cell size
   (e.g. 23×40 px), and `max_layers_per_pane: 16`.
-- Because of the 16-layer cap, all visible logos are composited into **one**
-  RGBA strip image placed over the logo column; it is re-uploaded on
-  scroll/filter changes.
+- Because of the 16-layer cap, visible logos are composited into **one** RGBA
+  strip image per logo column. Tree rows put logos at up to three indents, so
+  there are at most three strips. They're re-uploaded on scroll, filter, and
+  view changes.
 - Logo assets: decide between committing PNGs vs fetching at build time
   (trademark hygiene for a public repo).
 
@@ -134,8 +148,8 @@ The snapshot has no timestamps or focus history, so blink keeps its own:
 
 ## Out of scope for v1
 
-- Views (cycled with `h` / `l`), configurable item scope, query prefixes.
-- Non-agent jump targets (plain shells, tabs, workspaces).
+- Configurable item scope or default view, query prefixes, folding tree
+  nodes.
 - Close/kill from the picker, quick-jump digits.
 - Remote machines (`--machine`).
 - Prebuilt release binaries (v1 builds with `cargo build --release`).

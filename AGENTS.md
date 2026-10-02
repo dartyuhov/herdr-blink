@@ -2,7 +2,7 @@
 
 Guidance for coding agents working in this repository.
 
-herdr-blink is a herdr plugin (`dartyuhov.blink`): a fuzzy agent switcher shown as a herdr popup, replacing the built-in `goto` picker. The product spec is `docs/SPEC.md`. The user-facing docs and keymap are in `README.md`.
+herdr-blink is a herdr plugin (`dartyuhov.blink`): a fuzzy agent switcher shown as a herdr popup, replacing the built-in `goto` picker. The product spec is `docs/SPEC.md`, and the agents, workspaces, and projects views are designed in `docs/superpowers/specs/2026-10-02-views-design.md`. The user-facing docs and keymap are in `README.md`.
 
 ## Commands
 
@@ -11,7 +11,7 @@ cargo build --release          # herdr runs ./target/release/herdr-blink directl
 cargo test                     # unit tests live in #[cfg(test)] modules next to the code
 cargo test search::            # one module's tests; or a single test by name, e.g. cargo test terms_are_anded
 cargo clippy --all-targets && cargo fmt
-cargo run -- list [query]      # print picker rows in order against the live herdr session, no TUI
+cargo run -- list [--view agents|workspaces|projects] [query]  # print a view's rows against the live session, no TUI
 sh scripts/fetch-logos.sh      # download harness logos into assets/logos/ (gitignored)
 ```
 
@@ -26,7 +26,7 @@ There is one binary with subcommands, all wired in `herdr-plugin.toml`:
 - `open`: the plugin action. It sends `plugin.pane.open` for the `picker` entrypoint. A `ui_busy` reply means a popup is already open, and is treated as success.
 - `ui`: the popup process.
 - `event`: the `[[events]]` hook for `pane.focused` and `pane.agent_status_changed`.
-- `list`: a debug dump of the rows.
+- `list`: a debug dump of a view's rows, trees indented by depth.
 
 ### Open path
 
@@ -34,21 +34,24 @@ It must stay fast; the spec target is under 50 ms.
 
 - `herdr.rs` sends one `session.snapshot` over the raw Unix socket (newline-delimited JSON) rather than spawning the CLI.
 - `state.rs` reads `$HERDR_PLUGIN_STATE_DIR/state.json` once, without a lock.
-- `model.rs` joins agents, panes, tabs and workspaces into `Item`s and drops the focused pane.
+- `model.rs` joins panes, tabs and workspaces into one `Item` per pane. Plain shells have `agent: None`, and the focused pane is kept and marked `focused`.
 - Housekeeping, such as pruning state for closed panes, runs only after the first frame.
 - Do not add `git` subprocesses or network calls: `git.rs` reads `.git/HEAD`, `gitdir:` files and `commondir` directly.
 
 ### Data flow
 
-- `model::build_items` produces `Item`s.
-- `app::App` owns mode (Normal/Search), filter, query and selection, and recomputes `rows` on every change.
+- `model::build_items` produces one `Item` per pane.
+- `app::App` owns view, mode (Normal/Search), filter, query and selection. On every change it matches each item once, then calls `view::build_rows`.
+- `view.rs` is pure: `build_rows` turns items into `Row`s for a `View`, and `target` resolves a row to a `Target` (agent, pane, tab, workspace, or close). A row's `Node` is its identity across views, so the selection follows it.
 - `search::Searcher` matches each nucleo atom against every field. Atoms are AND-ed; within one atom, the best weighted field wins.
 - `ui::render` draws the frame and records `LogoSlot`s.
 - `graphics::Graphics` composites the logos into a single RGBA strip (`raster.rs`).
 
 Ordering:
-- With an empty query, rows sort by `model::tier_mru_cmp`: status tier, then last focus, then last status change, then snapshot order.
-- With a query, rows sort by score, with `tier_mru_cmp` as the tie-breaker.
+- In the agents view with an empty query, rows sort by `model::tier_mru_cmp`: agents before plain shells, then status tier, then last focus, then last status change, then snapshot order.
+- In the agents view with a query, rows sort by score, with `tier_mru_cmp` as the tie-breaker.
+- In the trees, group lines sort by an aggregate of every pane under them (most urgent agent tier, latest focus, latest status change, then herdr's workspace number, the tab's position, or the label), and panes by `tier_mru_cmp`. Trees are sorted before the query and filter prune them, so pruning never reorders.
+- herdr's tab `number` is a creation counter, not a position; `model.rs` derives `tab_number` from snapshot order.
 
 `search::Field::is_visible` decides whether a match triggers the hint line under the selected row. Agent and status count as visible because the logo and the status dot show them.
 
@@ -59,7 +62,7 @@ These constraints were verified against the herdr 0.9.1 source and are not obvio
 - A herdr popup has no pane id, so `pane.graphics.set` cannot target it. Instead, `ui` writes Kitty APC sequences to its own stdout. herdr's per-terminal ghostty-vt parses them and re-renders them, clipped to the popup.
 - The cell pixel size comes from `pane.graphics.info` on the tiled pane under the popup, i.e. `focused_pane_id` in `HERDR_PLUGIN_CONTEXT_JSON`.
 - The pty's TIOCGWINSZ pixel size is 0 until herdr's first resize, so `Graphics::init` is retried on `Event::Resize`.
-- All visible logos are composited into one image with a fixed id. The image is deleted and re-transmitted only when the visible `LogoSlot`s change. `BLINK_NO_GRAPHICS=1` forces the fallback glyphs.
+- Tree rows put logos at up to three indents, so `LogoSlot` carries an `x`. Visible logos are composited into one image per distinct `x`, with id `IMAGE_ID + x`. The images are deleted and re-transmitted only when the visible `LogoSlot`s change. `BLINK_NO_GRAPHICS=1` forces the fallback glyphs.
 - Logo PNGs are not committed (trademarks). They come from a pinned LobeHub release via `scripts/fetch-logos.sh`, which also runs as a manifest build step and never fails the build.
 
 ### Event hooks
@@ -72,5 +75,5 @@ These constraints were verified against the herdr 0.9.1 source and are not obvio
 
 - While the popup is open it receives every key, including herdr's prefix, so keybindings cannot reach it.
 - The popup closes when the process exits.
-- Jumping calls `agent.focus` with the pane id. herdr marks every pane in the target tab as seen, so they are no longer `done`.
+- Jumping to an agent calls `agent.focus` with the pane id. herdr marks every pane in the target tab as seen, so they are no longer `done`. Plain shells use `pane.focus`, tab and workspace lines use `tab.focus` and `workspace.focus`, and the focused pane just closes the popup.
 - Kitty keyboard disambiguation is pushed on start so that `Esc` followed by a key is not merged into `Alt+key`.

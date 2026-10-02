@@ -1,10 +1,13 @@
 //! Picker state and key handling, independent of rendering.
 
+use std::cmp::Reverse;
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::{
-    model::{Item, Status, tier_mru_cmp},
-    search::{MatchResult, Searcher},
+    model::{Item, Status},
+    search::Searcher,
+    view::{self, Row, Target, View},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,17 +20,13 @@ pub enum Mode {
 pub enum Action {
     None,
     Quit,
-    Jump(String),
-}
-
-pub struct Row {
-    pub item: usize,
-    pub matched: Option<MatchResult>,
+    Jump(Target),
 }
 
 pub struct App {
     pub items: Vec<Item>,
     pub rows: Vec<Row>,
+    pub view: View,
     pub mode: Mode,
     pub filter: Option<Status>,
     pub query: String,
@@ -40,6 +39,7 @@ impl App {
         let mut app = App {
             items,
             rows: Vec::new(),
+            view: View::Agents,
             mode: Mode::Normal,
             filter: None,
             query: String::new(),
@@ -55,58 +55,76 @@ impl App {
         self.refilter(false);
     }
 
+    pub fn set_view(&mut self, view: View) {
+        self.view = view;
+        self.refilter(true);
+    }
+
     pub fn selected_row(&self) -> Option<&Row> {
         self.rows.get(self.selected)
     }
 
+    #[cfg(test)]
     pub fn selected_item(&self) -> Option<&Item> {
-        self.selected_row().map(|r| &self.items[r.item])
+        self.selected_row()?.item().map(|i| &self.items[i])
+    }
+
+    /// Agent panes other than the focused one: the filter chips' universe,
+    /// identical in every view.
+    fn other_agents(&self) -> impl Iterator<Item = &Item> {
+        self.items.iter().filter(|i| i.is_agent() && !i.focused)
+    }
+
+    pub fn agent_count(&self) -> usize {
+        self.other_agents().count()
     }
 
     pub fn count(&self, status: Status) -> usize {
-        self.items.iter().filter(|i| i.status == status).count()
+        self.other_agents().filter(|i| i.status == status).count()
     }
 
-    /// Recomputes visible rows. With `keep_selection`, the selected pane
-    /// stays selected if it survives; otherwise the top row is selected.
+    /// Whether any visible row shows the working spinner.
+    pub fn animating(&self) -> bool {
+        let working = view::BADGES
+            .iter()
+            .position(|&s| s == Status::Working)
+            .unwrap_or_default();
+        self.rows.iter().any(|r| match (r.item(), &r.summary) {
+            (Some(i), _) => self.items[i].is_agent() && self.items[i].status == Status::Working,
+            (None, Some(s)) => s.counts[working] > 0,
+            (None, None) => false,
+        })
+    }
+
+    /// Recomputes visible rows. With `keep_selection`, the selected node
+    /// stays selected if it survives. Otherwise the best-scoring pane row is
+    /// selected when a query is active, and the first row when it is not.
     fn refilter(&mut self, keep_selection: bool) {
         let previous = keep_selection
-            .then(|| self.selected_item().map(|i| i.pane_id.clone()))
+            .then(|| self.selected_row().map(|r| r.node.clone()))
             .flatten();
         self.searcher.set_query(&self.query);
-        let items = &self.items;
-        let mut rows: Vec<Row> = items
+        let matches: Option<Vec<_>> = (!self.searcher.is_empty()).then(|| {
+            self.items
+                .iter()
+                .map(|i| self.searcher.match_item(i))
+                .collect()
+        });
+        self.rows = view::build_rows(self.view, &self.items, matches.as_deref(), self.filter);
+        self.selected = previous
+            .and_then(|node| self.rows.iter().position(|r| r.node == node))
+            .unwrap_or_else(|| self.best_row());
+    }
+
+    /// First row among those with the highest match score; 0 without a
+    /// query.
+    fn best_row(&self) -> usize {
+        self.rows
             .iter()
             .enumerate()
-            .filter(|(_, item)| self.filter.is_none_or(|f| item.status == f))
-            .filter_map(|(idx, item)| {
-                if self.searcher.is_empty() {
-                    return Some(Row {
-                        item: idx,
-                        matched: None,
-                    });
-                }
-                let matched = self.searcher.match_item(item)?;
-                Some(Row {
-                    item: idx,
-                    matched: Some(matched),
-                })
-            })
-            .collect();
-        rows.sort_by(|a, b| {
-            let score = |r: &Row| r.matched.as_ref().map_or(0, |m| m.score);
-            score(b)
-                .cmp(&score(a))
-                .then_with(|| tier_mru_cmp(&items[a.item], &items[b.item]))
-        });
-        self.rows = rows;
-        self.selected = previous
-            .and_then(|id| {
-                self.rows
-                    .iter()
-                    .position(|r| self.items[r.item].pane_id == id)
-            })
-            .unwrap_or(0);
+            .filter_map(|(idx, r)| Some((idx, r.matched.as_ref()?.score)))
+            .min_by_key(|&(_, score)| Reverse(score))
+            .map_or(0, |(idx, _)| idx)
     }
 
     fn move_selection(&mut self, delta: isize) {
@@ -128,8 +146,8 @@ impl App {
     }
 
     fn jump(&self) -> Action {
-        self.selected_item()
-            .map(|i| Action::Jump(i.pane_id.clone()))
+        view::target(&self.items, &self.rows, self.selected)
+            .map(Action::Jump)
             .unwrap_or(Action::None)
     }
 
@@ -148,8 +166,8 @@ impl App {
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => self.move_selection(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_selection(-1),
-            // Reserved for cycling views; no-op in v1.
-            KeyCode::Char('h') | KeyCode::Char('l') => {}
+            KeyCode::Char('h' | '[') => self.set_view(self.view.prev()),
+            KeyCode::Char('l' | ']') => self.set_view(self.view.next()),
             KeyCode::Char('/') => self.mode = Mode::Search,
             KeyCode::Char('b') => self.toggle_filter(Status::Blocked),
             KeyCode::Char('d') => self.toggle_filter(Status::Done),
@@ -172,6 +190,10 @@ impl App {
             KeyCode::Up => self.move_selection(-1),
             KeyCode::Char('n') if ctrl => self.move_selection(1),
             KeyCode::Char('p') if ctrl => self.move_selection(-1),
+            // Brackets switch views in search mode too, so they never reach
+            // the query.
+            KeyCode::Char('[') => self.set_view(self.view.prev()),
+            KeyCode::Char(']') => self.set_view(self.view.next()),
             KeyCode::Char('u') if ctrl => {
                 self.query.clear();
                 self.refilter(false);
@@ -201,24 +223,25 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{model::Harness, state::PaneTimes};
+    use crate::{model::Harness, state::PaneTimes, view::Node};
 
     fn item(id: &str, status: Status, focused_ms: u64) -> Item {
         Item {
             pane_id: id.into(),
+            workspace_id: "w1".into(),
+            tab_id: "w1:t1".into(),
             harness: Harness::Claude,
-            agent: "claude".into(),
+            agent: Some("claude".into()),
             status,
             title: format!("task {id}"),
             workspace: "ws".into(),
             tab: "tab".into(),
             cwd: "/tmp".into(),
-            git: None,
             times: PaneTimes {
                 last_focused_ms: focused_ms,
                 ..Default::default()
             },
-            order: 0,
+            ..Default::default()
         }
     }
 
@@ -226,22 +249,33 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
+    fn type_str(app: &mut App, s: &str) {
+        for c in s.chars() {
+            app.handle_key(key(KeyCode::Char(c)));
+        }
+    }
+
     fn ids(app: &App) -> Vec<&str> {
         app.rows
             .iter()
-            .map(|r| app.items[r.item].pane_id.as_str())
+            .filter_map(|r| r.item())
+            .map(|i| app.items[i].pane_id.as_str())
             .collect()
     }
 
-    fn app() -> App {
-        App::new(vec![
+    fn items() -> Vec<Item> {
+        vec![
             item("idle-old", Status::Idle, 1),
             item("working", Status::Working, 0),
             item("idle-new", Status::Idle, 9),
             item("done", Status::Done, 0),
             item("blocked", Status::Blocked, 0),
             item("unknown", Status::Unknown, 99),
-        ])
+        ]
+    }
+
+    fn app() -> App {
+        App::new(items())
     }
 
     #[test]
@@ -273,9 +307,7 @@ mod tests {
         app.handle_key(key(KeyCode::Char('j')));
         assert_eq!(app.selected, 1);
         app.handle_key(key(KeyCode::Char('/')));
-        for c in "old".chars() {
-            app.handle_key(key(KeyCode::Char(c)));
-        }
+        type_str(&mut app, "old");
         assert_eq!(ids(&app), ["idle-old"]);
         assert_eq!(app.selected, 0);
         app.handle_key(key(KeyCode::Esc));
@@ -283,7 +315,7 @@ mod tests {
         assert_eq!(app.query, "old");
         assert_eq!(
             app.handle_key(key(KeyCode::Enter)),
-            Action::Jump("idle-old".into())
+            Action::Jump(Target::Agent("idle-old".into()))
         );
         assert_eq!(app.handle_key(key(KeyCode::Char('q'))), Action::Quit);
     }
@@ -293,9 +325,102 @@ mod tests {
         let mut app = app();
         app.handle_key(key(KeyCode::Char('i')));
         app.handle_key(key(KeyCode::Char('/')));
-        for c in "work".chars() {
-            app.handle_key(key(KeyCode::Char(c)));
-        }
+        type_str(&mut app, "work");
         assert!(ids(&app).is_empty(), "'working' is filtered out");
+    }
+
+    #[test]
+    fn h_and_l_cycle_views_in_normal_mode_only() {
+        let mut app = app();
+        app.handle_key(key(KeyCode::Char('l')));
+        assert_eq!(app.view, View::Workspaces);
+        app.handle_key(key(KeyCode::Char('l')));
+        app.handle_key(key(KeyCode::Char('l')));
+        assert_eq!(app.view, View::Agents, "wraps forward");
+        app.handle_key(key(KeyCode::Char('h')));
+        assert_eq!(app.view, View::Projects, "wraps backward");
+
+        app.handle_key(key(KeyCode::Char('/')));
+        type_str(&mut app, "hl");
+        assert_eq!(app.view, View::Projects);
+        assert_eq!(app.query, "hl");
+    }
+
+    #[test]
+    fn brackets_cycle_views_in_both_modes() {
+        let mut app = app();
+        app.handle_key(key(KeyCode::Char(']')));
+        assert_eq!(app.view, View::Workspaces);
+        app.handle_key(key(KeyCode::Char('[')));
+        app.handle_key(key(KeyCode::Char('[')));
+        assert_eq!(app.view, View::Projects, "wraps backward");
+
+        app.handle_key(key(KeyCode::Char('/')));
+        type_str(&mut app, "ab");
+        app.handle_key(key(KeyCode::Char(']')));
+        assert_eq!(app.view, View::Agents, "wraps forward in search mode");
+        assert_eq!(app.mode, Mode::Search);
+        assert_eq!(app.query, "ab", "brackets are not typed into the query");
+    }
+
+    #[test]
+    fn query_and_filter_carry_across_views() {
+        let mut app = app();
+        app.handle_key(key(KeyCode::Char('i')));
+        app.set_query("new");
+        app.handle_key(key(KeyCode::Char('l')));
+        assert_eq!(app.filter, Some(Status::Idle));
+        assert_eq!(app.query, "new");
+        assert_eq!(ids(&app), ["idle-new"]);
+    }
+
+    #[test]
+    fn selection_follows_the_pane_across_views() {
+        let mut app = app();
+        app.handle_key(key(KeyCode::Char('j')));
+        assert_eq!(app.selected_item().unwrap().pane_id, "done");
+        app.handle_key(key(KeyCode::Char('l')));
+        assert_eq!(app.selected_item().unwrap().pane_id, "done");
+        app.handle_key(key(KeyCode::Char('h')));
+        assert_eq!(app.selected_item().unwrap().pane_id, "done");
+    }
+
+    #[test]
+    fn selection_falls_back_to_first_row_or_best_match() {
+        let mut items = items();
+        items[0].focused = true;
+        let mut app = App::new(items);
+        app.set_view(View::Workspaces);
+        // Select the focused pane, which the agents view does not show.
+        app.selected = app
+            .rows
+            .iter()
+            .position(|r| r.node == Node::Pane(0))
+            .unwrap();
+        app.set_view(View::Agents);
+        assert_eq!(app.selected, 0, "first row without a query");
+
+        app.set_view(View::Workspaces);
+        app.set_query("idle new");
+        let best = app.selected_item().unwrap();
+        assert_eq!(
+            best.pane_id, "idle-new",
+            "best-scoring pane, not the group line"
+        );
+        assert!(app.selected > 0);
+    }
+
+    #[test]
+    fn chips_count_other_agents() {
+        let mut items = items();
+        items[0].focused = true;
+        items.push(Item {
+            agent: None,
+            status: Status::Unknown,
+            ..item("shell", Status::Unknown, 0)
+        });
+        let app = App::new(items);
+        assert_eq!(app.agent_count(), 5);
+        assert_eq!(app.count(Status::Idle), 1);
     }
 }

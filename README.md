@@ -2,7 +2,8 @@
 
 A fast fuzzy agent switcher for [herdr](https://herdr.dev). It replaces the
 built-in `goto` picker: agents that need attention come first, then the
-rest in most-recently-used order. Rows show harness logos.
+rest in most-recently-used order. Rows show harness logos. Two tree views
+show every pane by workspace or by git repo.
 
 ## Install
 
@@ -38,9 +39,10 @@ Run `herdr server reload-config` to apply the change.
 
 ## Use
 
-The popup lists agent panes across every workspace, except the pane you are
-in. When the query is empty, rows are grouped by status in this order, and
-sorted most-recently-used within each group:
+The popup opens on the agents view, which lists agent panes across every
+workspace, except the pane you're in. When the query is empty, rows are
+grouped by status in this order, and sorted most-recently-used within each
+group:
 
 1. `blocked`: waiting on an approval or question
 2. `done`: finished, and you have not looked at it yet
@@ -51,18 +53,41 @@ sorted most-recently-used within each group:
 | Mode | Key | Action |
 |---|---|---|
 | normal | `j` / `k`, `↓` / `↑` | move selection |
+| normal | `h` / `l`, `[` / `]` | previous / next view |
 | normal | `/` | search |
 | normal | `b` / `d` / `w` / `i` | show only blocked / done / working / idle |
 | normal | same filter key again, or `a` | show all |
-| normal | `Enter` | jump to agent |
+| normal | `Enter` | jump to the selected row |
 | normal | `Esc` / `q` | close |
 | search | type | filter live |
 | search | `↓` / `↑`, `ctrl+n` / `ctrl+p` | move selection |
+| search | `[` / `]` | previous / next view |
 | search | `ctrl+w` / `ctrl+u` | delete word / clear query |
-| search | `Enter` | jump to agent |
+| search | `Enter` | jump to the selected row |
 | search | `Esc` | back to normal mode, query kept |
 
-`h` / `l` are reserved for switching views in a later version.
+### Views
+
+`h` and `l` cycle through three views, wrapping around. `[` and `]` do the
+same and also work in search mode. The query and the
+status filter carry over when you switch, and the selected pane stays
+selected if the new view shows it.
+
+- **Agents:** the flat list described above.
+- **Workspaces:** a tree of workspaces, tabs, and every pane, including plain
+  shells (shown with `$`) and the pane you're in (shown as `here`).
+- **Projects:** a tree of git repos, worktrees, and panes. The worktree level
+  appears only when a repo has panes in more than one checkout. Panes outside
+  a repo are grouped by folder.
+
+In the trees, every level sorts the same way as the agents view: the group
+with the most urgent agent first, then the most recently used. Group lines
+show status counts, such as `●1 ⠹2`, and the latest activity under them. The
+filter chips count agents only, so they're the same in every view.
+
+`Enter` on a pane focuses it. On a workspace or tab line, it focuses that
+workspace or tab. On a repo, worktree, or folder line, it focuses the most
+recently used pane under the line.
 
 ### Search
 
@@ -98,10 +123,10 @@ hint line under the selected row.
 - **Git:** repo and branch come from walking up from the pane's cwd and
   reading `.git/HEAD` directly. Linked worktrees, which use a `gitdir:` file,
   are supported. Results are cached per path while the popup is open.
-- **Logos:** all visible logos are combined into one RGBA strip image placed
-  over the logo column, and the strip is re-uploaded when the visible rows
-  change. Without graphics support, each harness gets a colored glyph
-  instead.
+- **Logos:** visible logos are combined into one RGBA strip image per logo
+  column. Tree rows sit at up to three indents, so there are at most three
+  strips. Strips are re-uploaded when the visible rows change. Without
+  graphics support, each harness gets a colored glyph instead.
 
 ### Logo assets
 
@@ -115,5 +140,6 @@ release. If a download fails, that harness gets its fallback glyph instead.
 
 ```sh
 cargo test
-cargo run -- list [query]   # print the picker rows in order, without the TUI
+cargo run -- list [--view agents|workspaces|projects] [query]
+                            # print a view's rows in order, without the TUI
 ```
