@@ -1,11 +1,11 @@
 # herdr-blink
 
-https://github.com/user-attachments/assets/9bf282d0-73c0-4d4c-a2b7-b51400ae2743
-
 A fast fuzzy agent switcher for [herdr](https://herdr.dev). It replaces the
 built-in `goto` picker: agents that need attention come first, then the
 rest in most-recently-used order. Rows show harness logos. Two tree views
 show every pane by workspace or by git repo.
+
+https://github.com/user-attachments/assets/7f9a0a2f-9e65-463e-8d12-ede352c8015e
 
 ## Install
 
