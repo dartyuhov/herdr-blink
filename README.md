@@ -1,6 +1,6 @@
 # herdr-blink
 
-[![Watch the blink demo video](docs/media/blink-demo.jpg)](docs/media/blink-demo.mp4)
+https://github.com/user-attachments/assets/9bf282d0-73c0-4d4c-a2b7-b51400ae2743
 
 A fast fuzzy agent switcher for [herdr](https://herdr.dev). It replaces the
 built-in `goto` picker: agents that need attention come first, then the
