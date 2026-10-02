@@ -6,7 +6,7 @@ description = "Blazing-fast fuzzy agent switcher: attention first, then most rec
 platforms = ["macos", "linux"]
 
 [[build]]
-command = ["cargo", "build", "--release"]
+command = ["cargo", "build", "--release", "--locked"]
 
 [[build]]
 command = ["sh", "scripts/fetch-logos.sh"]

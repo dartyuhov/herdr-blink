@@ -14,6 +14,12 @@ Kitty-graphics terminal such as Ghostty.
 herdr plugin install dartyuhov/herdr-blink
 ```
 
+The install builds the binary with `cargo build --release` and downloads the
+logos, so the first install takes a minute. To update, run the same command
+again. If you already linked a local copy, run
+`herdr plugin unlink dartyuhov.blink` first, because herdr refuses to install
+over a linked plugin.
+
 For local development, build the plugin and link it:
 
 ```sh
@@ -158,3 +164,8 @@ cargo test
 cargo run -- list [--view agents|workspaces|projects] [query]
                             # print a view's rows in order, without the TUI
 ```
+
+## License
+
+blink is available under the [MIT license](LICENSE). Harness logos are not
+part of this repository and remain the property of their owners.
