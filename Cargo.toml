@@ -1,0 +1,27 @@
+[package]
+name = "herdr-blink"
+version = "0.1.0"
+edition = "2024"
+description = "Blazing-fast fuzzy agent switcher for herdr"
+license = "MIT"
+repository = "https://github.com/dartyuhov/herdr-blink"
+readme = "README.md"
+keywords = ["herdr", "terminal", "tui", "agents", "picker"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+base64 = "0.22"
+crossterm = "0.29"
+nucleo-matcher = "0.3.1"
+png = "0.18"
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+unicode-width = "0.2"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

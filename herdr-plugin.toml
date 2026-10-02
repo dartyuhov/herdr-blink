@@ -1,0 +1,35 @@
+id = "dartyuhov.blink"
+name = "blink"
+version = "0.1.0"
+min_herdr_version = "0.9.1"
+description = "Blazing-fast fuzzy agent switcher: attention first, then most recently used."
+platforms = ["macos", "linux"]
+
+[[build]]
+command = ["cargo", "build", "--release"]
+
+[[build]]
+command = ["sh", "scripts/fetch-logos.sh"]
+
+[[actions]]
+id = "open"
+title = "blink: switch agent"
+contexts = ["workspace", "global"]
+command = ["./target/release/herdr-blink", "open"]
+
+[[panes]]
+id = "picker"
+title = "blink"
+placement = "popup"
+width = "72%"
+height = "60%"
+command = ["./target/release/herdr-blink", "ui"]
+
+# Focus / status-change timestamps for MRU ordering and "last activity".
+[[events]]
+on = "pane.focused"
+command = ["./target/release/herdr-blink", "event"]
+
+[[events]]
+on = "pane.agent_status_changed"
+command = ["./target/release/herdr-blink", "event"]

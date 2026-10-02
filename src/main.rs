@@ -1,0 +1,229 @@
+mod app;
+mod git;
+mod graphics;
+mod herdr;
+mod model;
+mod raster;
+mod search;
+mod state;
+mod ui;
+
+use std::{
+    collections::HashSet,
+    env,
+    io::{self, Write},
+    process::ExitCode,
+    time::{Duration, Instant},
+};
+
+use crossterm::{
+    event::{
+        self, Event, KeyEventKind, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+        PushKeyboardEnhancementFlags,
+    },
+    execute,
+    terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
+};
+use ratatui::{Terminal, backend::CrosstermBackend};
+
+use app::{Action, App};
+use model::Status;
+
+const PLUGIN_ID: &str = "dartyuhov.blink";
+const PICKER_ENTRYPOINT: &str = "picker";
+const TICK: Duration = Duration::from_millis(80);
+
+fn main() -> ExitCode {
+    let result = match env::args().nth(1).as_deref() {
+        Some("open") => open(),
+        Some("ui") => run_ui(),
+        Some("event") => state::run_event_hook().map_err(|e| e.to_string()),
+        Some("list") => list(),
+        _ => Err("usage: herdr-blink <open|ui|event|list>".into()),
+    };
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("herdr-blink: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `open` action: launch the popup. A popup is session-modal and receives
+/// all input, so if one is already open herdr reports it busy and the
+/// existing popup simply stays focused.
+fn open() -> Result<(), String> {
+    let plugin = env::var("HERDR_PLUGIN_ID").unwrap_or_else(|_| PLUGIN_ID.into());
+    match herdr::open_plugin_pane(&plugin, PICKER_ENTRYPOINT) {
+        Ok(()) => Ok(()),
+        Err(herdr::Error::Api { code, .. }) if code == "ui_busy" => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+fn load_items() -> Result<(Vec<model::Item>, serde_json::Value), String> {
+    let snapshot = herdr::snapshot().map_err(|e| e.to_string())?;
+    let state = state::load(&state::state_dir());
+    let items = model::build_items(&snapshot, &state, &mut git::GitCache::default());
+    Ok((items, snapshot))
+}
+
+fn list() -> Result<(), String> {
+    let (items, _) = load_items()?;
+    let mut app = App::new(items);
+    if let Some(query) = env::args().nth(2) {
+        app.set_query(&query);
+    }
+    for row in &app.rows {
+        let i = &app.items[row.item];
+        println!(
+            "{}\t{}\t{}\t{}\t{} › {}\t{}",
+            i.pane_id,
+            i.agent,
+            i.status.word(),
+            i.title,
+            i.workspace,
+            i.tab,
+            i.folder_hint()
+        );
+    }
+    Ok(())
+}
+
+fn run_ui() -> Result<(), String> {
+    let (items, snapshot) = load_items()?;
+    let mut app = App::new(items);
+
+    let mut stdout = io::stdout();
+    // Popup-local background so the popup renders opaque, like the user's
+    // other `#1e2030` popups.
+    let _ = write!(stdout, "\x1b]11;#1e2030\x07");
+    terminal::enable_raw_mode().map_err(|e| e.to_string())?;
+    execute!(stdout, EnterAlternateScreen).map_err(|e| e.to_string())?;
+    // Unambiguous Esc (no Esc+key → Alt+key merging); ignored by terminals
+    // without the kitty keyboard protocol.
+    let _ = execute!(
+        stdout,
+        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+    );
+    let mut terminal = Terminal::new(CrosstermBackend::new(stdout)).map_err(|e| e.to_string())?;
+
+    let mut graphics = graphics::Graphics::init();
+    let result = ui_loop(&mut terminal, &mut app, &snapshot, &mut graphics);
+
+    if let Some(g) = graphics.as_mut() {
+        g.clear(terminal.backend_mut());
+    }
+    let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
+    let _ = terminal::disable_raw_mode();
+    let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen);
+    let _ = terminal.show_cursor();
+
+    match result? {
+        Some(pane_id) => {
+            herdr::focus_agent(&pane_id).map_err(|e| e.to_string())?;
+            let now = state::now_ms();
+            let _ = state::update(&state::state_dir(), |s| {
+                state::apply_event(s, state::EventKind::Focused, pane_id, now)
+            });
+            Ok(())
+        }
+        None => Ok(()),
+    }
+}
+
+type Term = Terminal<CrosstermBackend<io::Stdout>>;
+
+fn ui_loop(
+    terminal: &mut Term,
+    app: &mut App,
+    snapshot: &serde_json::Value,
+    graphics: &mut Option<graphics::Graphics>,
+) -> Result<Option<String>, String> {
+    let mut ui = ui::UiState::default();
+    if let Some(g) = graphics.as_ref() {
+        ui.image_logos = g.available().clone();
+    }
+    terminal
+        .draw(|f| ui::render(f, app, &mut ui))
+        .map_err(|e| e.to_string())?;
+    // Housekeeping waits until the first frame is on screen.
+    prune_state(snapshot);
+
+    let mut last_slots = Vec::new();
+    let mut last_tick = Instant::now();
+    let mut dirty = true;
+
+    loop {
+        if dirty {
+            terminal
+                .draw(|f| ui::render(f, app, &mut ui))
+                .map_err(|e| e.to_string())?;
+            if let Some(g) = graphics.as_mut()
+                && ui.logo_slots != last_slots
+            {
+                g.draw(terminal.backend_mut(), ui.logo_origin, &ui.logo_slots);
+                last_slots = ui.logo_slots.clone();
+            }
+            dirty = false;
+        }
+
+        let timeout = TICK.saturating_sub(last_tick.elapsed());
+        if event::poll(timeout).map_err(|e| e.to_string())? {
+            match event::read().map_err(|e| e.to_string())? {
+                Event::Key(key) if key.kind != KeyEventKind::Release => match app.handle_key(key) {
+                    Action::Quit => return Ok(None),
+                    Action::Jump(pane_id) => return Ok(Some(pane_id)),
+                    Action::None => dirty = true,
+                },
+                Event::Resize(..) => {
+                    // Placement depends on geometry; force a re-upload. The
+                    // cell size may only become known after herdr's first
+                    // resize, so retry graphics if they were unavailable.
+                    if graphics.is_none() {
+                        *graphics = graphics::Graphics::init();
+                        if let Some(g) = graphics.as_ref() {
+                            ui.image_logos = g.available().clone();
+                        }
+                    }
+                    last_slots.clear();
+                    dirty = true;
+                }
+                _ => {}
+            }
+        }
+        if last_tick.elapsed() >= TICK {
+            last_tick = Instant::now();
+            ui.tick = ui.tick.wrapping_add(1);
+            // Only the working spinner animates.
+            if app
+                .rows
+                .iter()
+                .any(|r| app.items[r.item].status == Status::Working)
+            {
+                dirty = true;
+            }
+        }
+    }
+}
+
+/// Lazily drops state entries for panes that no longer exist.
+fn prune_state(snapshot: &serde_json::Value) {
+    let Some(panes) = snapshot.get("panes").and_then(|p| p.as_array()) else {
+        return;
+    };
+    let live: HashSet<&str> = panes
+        .iter()
+        .filter_map(|p| p.get("pane_id")?.as_str())
+        .collect();
+    if live.is_empty() {
+        return;
+    }
+    let dir = state::state_dir();
+    let current = state::load(&dir);
+    if current.keys().all(|id| live.contains(id.as_str())) {
+        return;
+    }
+    let _ = state::update(&dir, |s| state::prune(s, &live));
+}
