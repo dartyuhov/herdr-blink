@@ -1,5 +1,7 @@
 # herdr-blink
 
+[![Watch the blink demo video](docs/media/blink-demo.jpg)](docs/media/blink-demo.mp4)
+
 A fast fuzzy agent switcher for [herdr](https://herdr.dev). It replaces the
 built-in `goto` picker: agents that need attention come first, then the
 rest in most-recently-used order. Rows show harness logos. Two tree views
