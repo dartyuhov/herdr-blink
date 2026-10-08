@@ -1,12 +1,12 @@
 id = "dartyuhov.blink"
 name = "blink"
-version = "0.1.0"
+version = "0.1.1"
 min_herdr_version = "0.9.1"
 description = "Blazing-fast fuzzy agent switcher: attention first, then most recently used."
 platforms = ["macos", "linux"]
 
 [[build]]
-command = ["cargo", "build", "--release", "--locked"]
+command = ["sh", "scripts/install-binary.sh"]
 
 [[build]]
 command = ["sh", "scripts/fetch-logos.sh"]

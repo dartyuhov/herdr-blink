@@ -1,0 +1,105 @@
+name: Build release binaries
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-musl
+          - runner: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-musl
+    runs-on: ${{ matrix.runner }}
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '11.0'
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Install Rust
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal
+          rustup default 1.97.1
+          rustup target add "$TARGET"
+      # Use Rust's default linker and bundled musl runtime. Overriding the
+      # linker with the distro's musl-gcc can produce crashing x86_64 binaries.
+      - name: Check release versions
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, tomllib
+          package = tomllib.loads(pathlib.Path('Cargo.toml').read_text())['package']['version']
+          plugin = tomllib.loads(pathlib.Path('herdr-plugin.toml').read_text())['version']
+          assert package == plugin, 'Cargo and plugin versions must match'
+          if os.environ['REF_TYPE'] == 'tag':
+              assert os.environ['REF_NAME'] == f'v{plugin}', 'Tag must match plugin version'
+          PY
+      - name: Test and build
+        run: |
+          cargo test --locked --target "$TARGET"
+          cargo build --release --locked --target "$TARGET"
+      - name: Smoke-test binary
+        run: |
+          python3 - <<'PY'
+          import os, subprocess
+          binary = f"target/{os.environ['TARGET']}/release/herdr-blink"
+          result = subprocess.run([binary], capture_output=True, text=True)
+          assert result.returncode == 1 and 'usage: herdr-blink' in result.stderr, result
+          PY
+      - name: Test installer
+        run: BLINK_TEST_BINARY="target/$TARGET/release/herdr-blink" python3 scripts/test-install-binary.py
+      - name: Package binary and checksum
+        run: |
+          mkdir -p dist
+          asset="herdr-blink-$TARGET"
+          cp "target/$TARGET/release/herdr-blink" "dist/$asset"
+          python3 - <<'PY'
+          import hashlib, os, pathlib
+          name = f"herdr-blink-{os.environ['TARGET']}"
+          path = pathlib.Path('dist') / name
+          digest = hashlib.sha256(path.read_bytes()).hexdigest()
+          path.with_name(name + '.sha256').write_text(f'{digest}  {name}\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" dist/* --verify-tag --title "blink $TAG" --generate-notes
