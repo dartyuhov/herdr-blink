@@ -16,12 +16,19 @@ REAL_BINARY = os.environ.get("BLINK_TEST_BINARY")
 PAYLOAD = Path(REAL_BINARY).read_bytes() if REAL_BINARY else b"#!/bin/sh\nexit 0\n"
 DOWNLOAD_STUB = r'''
 import hashlib, json, os, pathlib, sys
-url = sys.argv[-3]
-out = pathlib.Path(sys.argv[-1])
+url = next(arg for arg in sys.argv if arg.startswith('https://'))
+out = pathlib.Path(sys.argv[sys.argv.index('-o') + 1])
 with open(os.environ['DOWNLOAD_LOG'], 'a') as log:
     log.write(json.dumps(url) + '\n')
 mode = os.environ.get('DOWNLOAD_MODE', '')
+if url.endswith('/releases/latest'):
+    print('https://github.com/dartyuhov/herdr-blink/releases/tag/v0.1.0', end='')
+    sys.exit(0)
+if mode == 'pending' and '/v0.1.1/' in url:
+    print('404', end='')
+    sys.exit(22)
 if mode == 'missing' or (mode == 'missing-checksum' and url.endswith('.sha256')):
+    print('500', end='')
     sys.exit(22)
 payload = pathlib.Path(os.environ['TEST_PAYLOAD']).read_bytes()
 if url.endswith('.sha256'):
@@ -106,7 +113,7 @@ class InstallerTests(unittest.TestCase):
                 self.assertTrue(os.access(self.destination, os.X_OK))
                 downloads = (self.root / "downloads.jsonl").read_text().splitlines()
                 url = f"https://github.com/dartyuhov/herdr-blink/releases/download/v0.1.1/herdr-blink-{target}"
-                self.assertEqual([json.loads(line) for line in downloads[-2:]], [url, url + ".sha256"])
+                self.assertEqual([json.loads(line) for line in downloads[-2:]], [url + ".sha256", url])
                 self.assert_cleaned_up()
 
     def test_both_checksum_tools(self):
@@ -140,7 +147,7 @@ class InstallerTests(unittest.TestCase):
             with self.subTest(mode=mode):
                 result = self.run_installer(DOWNLOAD_MODE=mode)
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn("release is published", result.stderr)
+                self.assertIn("could not download", result.stderr)
                 self.assertFalse(self.destination.exists())
                 self.assert_cleaned_up()
 
@@ -149,6 +156,15 @@ class InstallerTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("unsupported platform", result.stderr)
         self.assertFalse((self.root / "downloads.jsonl").exists())
+
+    def test_unpublished_version_uses_complete_published_release(self):
+        result = self.run_installer(DOWNLOAD_MODE="pending")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.destination.read_bytes(), PAYLOAD)
+        downloads = (self.root / "downloads.jsonl").read_text().splitlines()
+        self.assertTrue(all('/v0.1.0/' in json.loads(line) for line in downloads[-2:]))
+        self.assertIn("using published blink v0.1.0", result.stdout)
+        self.assert_cleaned_up()
 
     def test_version_is_read_from_checkout(self):
         self.manifest.write_text('version = "0.2.0"\n')

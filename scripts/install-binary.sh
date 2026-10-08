@@ -50,12 +50,34 @@ trap 'rm -rf "$tmp"' EXIT
 trap 'exit 1' HUP INT TERM
 
 echo "Downloading blink v$version ($target)..."
-for file in "$asset" "$asset.sha256"; do
+download() {
     curl --fail --silent --show-error --location --retry 3 \
-        --connect-timeout 15 --max-time 180 --proto '=https' --proto-redir '=https' \
-        "$base/$file" -o "$tmp/$file" ||
-        fail "could not download $file for v$version; check your connection and that the release is published"
-done
+        --connect-timeout 15 --max-time 180 --proto '=https' --proto-redir '=https' "$@"
+}
+# Release PRs update the manifest before binaries finish building. Only a
+# missing release (HTTP 404) falls back; other download failures remain errors.
+if status=$(download "$base/$asset.sha256" -o "$tmp/$asset.sha256" -w '%{http_code}'); then
+    :
+elif [ "$status" = 404 ]; then
+    latest=$(download "https://github.com/dartyuhov/herdr-blink/releases/latest" \
+        -o /dev/null -w '%{url_effective}') || fail "could not find a published release"
+    case "$latest" in
+        https://github.com/dartyuhov/herdr-blink/releases/tag/v*) ;;
+        *) fail "unexpected latest release URL" ;;
+    esac
+    tag=${latest##*/}
+    version=${tag#v}
+    case "$version" in
+        ''|*[!0-9A-Za-z.+-]*) fail "invalid latest release version" ;;
+    esac
+    base="https://github.com/dartyuhov/herdr-blink/releases/download/$tag"
+    echo "Requested release isn't ready; using published blink $tag."
+    download "$base/$asset.sha256" -o "$tmp/$asset.sha256" ||
+        fail "could not download checksum; check that the release is published"
+else
+    fail "could not download checksum; check your connection and that the release is published"
+fi
+download "$base/$asset" -o "$tmp/$asset" || fail "could not download $asset for v$version"
 
 IFS=' ' read -r expected rest < "$tmp/$asset.sha256" || fail "empty checksum file"
 case "$expected" in

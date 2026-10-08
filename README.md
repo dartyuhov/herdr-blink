@@ -23,7 +23,8 @@ herdr plugin install dartyuhov/herdr-blink
 > (SSH) machines don't appear in the picker yet. See https://github.com/herdrdev/herdr/discussions/4396.
 
 The install downloads a prebuilt binary from the GitHub Release matching the
-plugin version, verifies its SHA-256 checksum, and downloads the logos.
+plugin version, verifies its SHA-256 checksum, and downloads the logos. If that
+release isn't published yet, it uses the latest complete published release.
 Linux binaries use musl and don't require a particular glibc version.
 To update, run the same command again. If you already linked a local copy, run
 `herdr plugin unlink dartyuhov.blink` first, because herdr refuses to install
@@ -170,6 +171,9 @@ release. If a download fails, that harness gets its fallback glyph instead.
 
 ## Development
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for commit and PR naming rules,
+versioning, and the release process.
+
 Use these commands to test the plugin and inspect rows without opening the TUI:
 
 ```sh
@@ -181,20 +185,26 @@ cargo run -- list [--view agents|workspaces|projects] [query]
 
 ### Releases
 
+Release Please maintains a release PR after feature and fix PRs merge into
+`main`. It updates `Cargo.toml`, `Cargo.lock`, `herdr-plugin.toml`, the release
+manifest, and `CHANGELOG.md`. Merge the release PR when you're ready to publish;
+you don't need to edit versions or push tags locally.
+
 `.github/workflows/release.yml` tests and builds all four platforms on pull
-requests, pushes to `main`, and version tags. Tag builds publish the binaries
-and their checksum files to a GitHub Release after every platform passes.
+requests, pushes to `main`, version tags, and manual workflow runs. After all
+four builds pass on `main`, Release Please creates or updates the release PR.
+When a release PR has merged, it creates a draft GitHub Release. The same
+workflow verifies and uploads every binary and checksum before publishing the
+release page and tag. Failed publication can be retried by rerunning the
+workflow on the same commit.
 
-To prepare a release, update the version in `Cargo.toml` and
-`herdr-plugin.toml`, then run `cargo check` to update `Cargo.lock` and
-`cargo test --locked` to verify it. Commit the changes and push a matching
-`v` tag, such as `v0.1.1`. The workflow rejects tags that don't match the
-manifest versions.
+The workflow explicitly starts CI for bot-created release PRs because GitHub's
+built-in token doesn't trigger PR workflows. No personal access token is
+required. Repository Actions settings must allow GitHub Actions to create PRs.
 
-Publish the tag and wait for the release workflow to finish before advancing
-`main` to that release commit: the default install uses `main`, and its
-matching release assets must already exist. You can also install a published
-version explicitly:
+While a new release is being built, the installer uses the latest complete
+published release. Run the install command again after publication to get the
+new version. You can also select a published version explicitly:
 
 ```sh
 herdr plugin install dartyuhov/herdr-blink --ref v0.1.1
@@ -216,8 +226,31 @@ BLINK_TEST_BINARY=target/release/herdr-blink python3 scripts/test-install-binary
 ```
 
 The workflow runs the same test with the actual binary for each platform.
-Builds triggered without a version tag upload workflow artifacts but don't
-publish a GitHub Release.
+Pull requests, tag builds, and manual runs upload workflow artifacts without
+publishing. Only successful `main` builds can publish a release.
+
+### Commit and PR titles
+
+Use Conventional Commit titles so Release Please can choose the next version.
+Install the local `commit-msg` hook with Python 3 available:
+
+```sh
+sh scripts/install-hooks.sh
+```
+
+The hook validates local commit messages; GitHub validates PR titles. PRs use
+squash merges with the PR title as the final commit title:
+
+- `fix: correct agent ordering` produces a patch release.
+- `feat: support remote panes` produces a minor release.
+- `feat!: change configuration format` produces a major release.
+- `docs: explain search syntax` and `chore: update tooling` don't trigger a
+  release on their own.
+
+Optional scopes work, such as `fix(search): correct exact matches`. Other
+accepted types are `refactor`, `perf`, `test`, `build`, `ci`, and `revert`.
+If you already use a custom hooks directory, the setup script stops so you
+can integrate `.githooks/commit-msg` into it without replacing your hooks.
 
 ## License
 

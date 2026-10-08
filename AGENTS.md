@@ -19,6 +19,24 @@ The plugin is linked locally with `herdr plugin link "$PWD"`, and `prefix+f` is 
 
 The `herdr` CLI prints a zoxide warning on stderr; ignore it.
 
+## Commits and releases
+
+Before writing commit messages or PR titles, read `CONTRIBUTING.md` for the
+Conventional Commit format and version-bump rules. PRs use squash merges with
+the PR title as the final commit title.
+
+For version changes, publication, or release-workflow edits, also read
+`README.md#releases`, `release-please-config.json`, and
+`.github/workflows/release.yml`. Use the automated release PR flow: Release
+Please updates versions and the changelog; merging its PR publishes binaries
+and checksums after all four platform builds pass. Ordinary changes retain the
+current version; manual version edits and tag pushes require an explicit
+request to override this flow.
+
+Verify publication before reporting a release complete: the GitHub Release
+must be public and contain all four binaries and their matching checksums.
+Successful CI or a version tag alone isn't proof of publication.
+
 ## Architecture
 
 There is one binary with subcommands, all wired in `herdr-plugin.toml`:

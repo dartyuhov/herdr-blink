@@ -1,6 +1,6 @@
 id = "dartyuhov.blink"
 name = "blink"
-version = "0.1.1"
+version = "0.1.1" # x-release-please-version
 min_herdr_version = "0.9.1"
 description = "Blazing-fast fuzzy agent switcher: attention first, then most recently used."
 platforms = ["macos", "linux"]
