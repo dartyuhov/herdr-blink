@@ -7,6 +7,10 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
@@ -30,6 +34,8 @@ jobs:
       TARGET: ${{ matrix.target }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
       - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
@@ -67,6 +73,17 @@ jobs:
           PY
       - name: Test installer
         run: BLINK_TEST_BINARY="target/$TARGET/release/herdr-blink" python3 scripts/test-install-binary.py
+      - name: Test release tooling
+        run: python3 scripts/test-release-tools.py
+      - name: Check title on manually dispatched release PR builds
+        if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          title=$(gh pr view "$BRANCH" --json title --jq .title)
+          python3 scripts/check-commit-title.py "$title"
       - name: Package binary and checksum
         run: |
           mkdir -p dist
@@ -86,20 +103,61 @@ jobs:
           if-no-files-found: error
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-22.04
     permissions:
       contents: write
+      issues: write
+      pull-requests: write
+      actions: write
     steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - uses: googleapis/release-please-action@v4
+        id: release
+      - name: Find pending draft release
+        id: pending
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TESTED_SHA: ${{ github.sha }}
+        run: |
+          tag=$(python3 -c 'import tomllib; print("v" + tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')
+          if gh release view "$tag" --json isDraft,targetCommitish --jq 'select(.isDraft) | .targetCommitish' > /tmp/release-target; then
+            target=$(cat /tmp/release-target)
+            if [ -z "$target" ]; then exit 0; fi
+            if [ "$target" != "$TESTED_SHA" ]; then
+              echo "Draft release does not target the tested commit" >&2
+              exit 1
+            fi
+            echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/download-artifact@v5
+        if: steps.pending.outputs.tag != ''
         with:
           path: dist
           merge-multiple: true
       - name: Publish release
+        if: steps.pending.outputs.tag != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ steps.pending.outputs.tag }}
         run: |
-          gh release create "$TAG" dist/* --verify-tag --title "blink $TAG" --generate-notes
+          python3 scripts/check-release-assets.py dist
+          gh release upload "$TAG" dist/* --clobber
+          gh release edit "$TAG" --draft=false --latest
+      - name: Run CI on the bot-created release PR
+        if: steps.release.outputs.pr != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_PR: ${{ steps.release.outputs.pr }}
+        run: |
+          branch=$(python3 -c 'import json, os; print(json.loads(os.environ["RELEASE_PR"])["headBranchName"])')
+          gh workflow run release.yml --ref "$branch"
