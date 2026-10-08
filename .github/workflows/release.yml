@@ -38,12 +38,8 @@ jobs:
           rustup toolchain install 1.97.1 --profile minimal
           rustup default 1.97.1
           rustup target add "$TARGET"
-      - name: Install musl linker
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y musl-tools
-          echo "RUSTFLAGS=-C linker=musl-gcc" >> "$GITHUB_ENV"
+      # Use Rust's default linker and bundled musl runtime. Overriding the
+      # linker with the distro's musl-gcc can produce crashing x86_64 binaries.
       - name: Check release versions
         env:
           REF_TYPE: ${{ github.ref_type }}
