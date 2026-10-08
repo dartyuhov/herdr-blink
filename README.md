@@ -171,6 +171,9 @@ release. If a download fails, that harness gets its fallback glyph instead.
 
 ## Development
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for commit and PR naming rules,
+versioning, and the release process.
+
 Use these commands to test the plugin and inspect rows without opening the TUI:
 
 ```sh
