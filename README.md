@@ -20,7 +20,7 @@ herdr plugin install dartyuhov/herdr-blink
 
 > [!NOTE]
 > blink works only with local panes and windows. Panes on herdr's remote
-> (SSH) machines don't appear in the picker yet.
+> (SSH) machines don't appear in the picker yet. See https://github.com/herdrdev/herdr/discussions/4396.
 
 The install downloads a prebuilt binary from the GitHub Release matching the
 plugin version, verifies its SHA-256 checksum, and downloads the logos.
